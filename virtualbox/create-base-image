@@ -1,0 +1,86 @@
+#!/bin/sh
+
+VMNAME=$1
+OS_IMAGE=$2
+KICKSTART_FILE=$3
+
+
+if [[ "x${VMNAME}" == "x" || "x${OS_IMAGE}" == "x" || "x${KICKSTART_FILE}" == "x" ]]; then
+
+cat << EOF
+Usage:
+    `basename $0` vmname base_image kickstart_file
+EOF
+
+exit 1
+
+fi
+
+
+VB_VM_ROOT=${VB_VM_ROOT-"/Users/emeka/vb_vm"}
+HD_PATH=$VB_VM_ROOT/$VMNAME/$VMNAME.vmdk
+FD_PATH=${FD_PATH-/tmp/ks.img}
+FD_MOUNT_POINT=${FD_MOUNT_POINT-/tmp/mnt}
+
+
+function vm_state() {
+    local vmname=$1
+    VBoxManage showvminfo $vmname --machinereadable | grep "^VMState" | cut -f2 -d=
+}
+
+VBoxManage createvm --name $VMNAME --register
+VBoxManage modifyvm $VMNAME --ostype RedHat_64 --memory 512 --vram 10
+VBoxManage modifyvm $VMNAME --acpi on --ioapic on
+VBoxManage modifyvm $VMNAME --cpus 1 --rtcuseutc on --cpuhotplug on --pae on
+VBoxManage modifyvm $VMNAME --hwvirtex on --hwvirtexexcl on
+VBoxManage modifyvm $VMNAME --nestedpaging on --largepages on
+VBoxManage modifyvm $VMNAME --vtxvpid on --accelerate3d off
+VBoxManage modifyvm $VMNAME --nic1 nat --natpf1 "guestssh,tcp,,2201,,22"
+VBoxManage modifyvm $VMNAME --boot1 dvd --boot2 disk
+
+VBoxManage storagectl $VMNAME --name FLOPPY --add floppy --controller I82078 --hostiocache on --bootable off
+VBoxManage storagectl $VMNAME --name IDE --add ide --controller PIIX4 --hostiocache on --bootable on
+VBoxManage storagectl $VMNAME --name SATA --add sata --controller IntelAhci --sataportcount 1 --hostiocache off --bootable on
+
+
+VBoxManage createhd --filename $HD_PATH --size 8000 --format VMDK --variant Standard
+VBoxManage storageattach $VMNAME --storagectl SATA --port 0 --device 0 --type hdd --medium $HD_PATH --mtype normal --nonrotational on
+VBoxManage storageattach $VMNAME --storagectl IDE --port 0 --device 0 --type dvddrive --medium $OS_IMAGE
+
+
+rm -f $FD_PATH
+dd bs=512 count=2280 if=/dev/zero of=$FD_PATH
+
+device=`hdiutil attach -nomount $FD_PATH | cut -d ' ' -f 1`
+newfs_msdos $device
+hdiutil detach $device -force
+
+device=`hdiutil attach $FD_PATH -mountpoint $FD_MOUNT_POINT | cut -d ' ' -f 1`
+#path=`mount |grep -w "$device"  | cut -d ' ' -f 3`
+cp $KICKSTART_FILE $FD_MOUNT_POINT/ks.cfg
+hdiutil detach $device -force
+
+VBoxManage storageattach $VMNAME --storagectl FLOPPY --port 0 --device 0 --type fdd --medium $FD_PATH
+
+VBoxManage startvm $VMNAME
+
+sleep 2
+
+VM_STATE=`vm_state $VMNAME`
+while [[ "x$VM_STATE" == "xpoweroff" ]]; do
+  VM_STATE=`vm_state $VMNAME`
+  echo "Waiting for VM to start - (present state is $VM_STATE)"
+  sleep 10
+done
+
+VM_STATE=`vm_state $VMNAME`
+while [[ ! "x$VM_STATE" == "xpoweroff" ]]; do
+  VM_STATE=`vm_state $VMNAME`
+  echo "Waiting for VM to stop - (present state is $VM_STATE)"
+  sleep 10
+done
+
+
+VBoxManage storagectl centos-scripted --name IDE --remove
+VBoxManage storagectl centos-scripted --name FLOPPY --remove
+VBoxManage startvm $VMNAME
