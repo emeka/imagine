@@ -4,6 +4,14 @@ VMNAME=$1
 OS_IMAGE=$2
 KICKSTART_FILE=$3
 
+PLATFORM=`uname`
+
+if [[ $PLATFORM == 'Darwin' ]]; then
+        SED=${SED-sed -E}
+    else
+        SED=${SED-sed -r}
+    fi
+
 
 if [[ "x${VMNAME}" == "x" || "x${OS_IMAGE}" == "x" || "x${KICKSTART_FILE}" == "x" ]]; then
 
@@ -25,7 +33,7 @@ FD_MOUNT_POINT=${FD_MOUNT_POINT-/tmp/mnt}
 
 function vm_state() {
     local vmname=$1
-    VBoxManage showvminfo $vmname --machinereadable | grep "^VMState" | cut -f2 -d=
+    VBoxManage showvminfo $vmname --machinereadable | grep "^VMState=" | $SED -e 's/VMState="(.*)"/\1/'
 }
 
 VBoxManage createvm --name $VMNAME --register
@@ -67,20 +75,26 @@ VBoxManage startvm $VMNAME
 sleep 2
 
 VM_STATE=`vm_state $VMNAME`
-while [[ "x$VM_STATE" == "xpoweroff" ]]; do
-  VM_STATE=`vm_state $VMNAME`
-  echo "Waiting for VM to start - (present state is $VM_STATE)"
-  sleep 10
+while [ $VM_STATE == 'poweroff' ]; do
+    sleep 5
+    VM_STATE=`vm_state $VMNAME`
 done
 
+sleep 5  #You will need to adjust this to not wait too long before sending the key strokes.
+
+#This send the string "\tks=floppy" to the VM using US keyboard scancodes
+VBoxManage controlvm $VMNAME keyboardputscancode 0f 39 25 1f 0d 21 26 18 19 99 19 15 1c
+
+echo "Waiting for VM to reboot"
 VM_STATE=`vm_state $VMNAME`
-while [[ ! "x$VM_STATE" == "xpoweroff" ]]; do
-  VM_STATE=`vm_state $VMNAME`
-  echo "Waiting for VM to stop - (present state is $VM_STATE)"
-  sleep 10
+while [ $VM_STATE != 'poweroff' ]; do
+    sleep 10
+    VM_STATE=`vm_state $VMNAME`
 done
 
 
-VBoxManage storagectl centos-scripted --name IDE --remove
-VBoxManage storagectl centos-scripted --name FLOPPY --remove
+VBoxManage storagectl $VMNAME --name IDE --remove
+VBoxManage storagectl $VMNAME --name FLOPPY --remove
+rm -f $FD_PATH
+
 VBoxManage startvm $VMNAME
