@@ -2,7 +2,8 @@
 
 VMNAME=$1
 OS_IMAGE=$2
-KICKSTART_FILE=$3
+KICKSTART_SRC_FILE=$3
+
 
 PLATFORM=`uname`
 
@@ -13,7 +14,7 @@ if [[ $PLATFORM == 'Darwin' ]]; then
     fi
 
 
-if [[ "x${VMNAME}" == "x" || "x${OS_IMAGE}" == "x" || "x${KICKSTART_FILE}" == "x" ]]; then
+if [[ "x${VMNAME}" == "x" || "x${OS_IMAGE}" == "x" || "x${KICKSTART_SRC_FILE}" == "x" ]]; then
 
 cat << EOF
 Usage:
@@ -24,11 +25,16 @@ exit 1
 
 fi
 
+WORK_DIR=${WORK_DIR:-/tmp}
+OVF_STORE=${OVF_STORE:-~/stores/ovf}
+VB_STORE=${VB_STORE:-~/stores/vbox}
 
-VB_VM_ROOT=${VB_VM_ROOT-"/Users/emeka/vb_vm"}
-HD_PATH=$VB_VM_ROOT/$VMNAME/$VMNAME.vmdk
-FD_PATH=${FD_PATH-/tmp/ks.img}
-FD_MOUNT_POINT=${FD_MOUNT_POINT-/tmp/mnt}
+HD_PATH=$VB_STORE/${VMNAME}/${VMNAME}.vmdk
+FD_PATH=${FD_PATH-$WORK_DIR/ks.img}
+FD_MOUNT_POINT=${FD_MOUNT_POINT-$WORK_DIR/mnt}
+KICKSTART_FILE=${KICKSTART_FILE:-$FD_MOUNT_POINT/ks.cfg}
+PUBLIC_KEY_PLACEHOLDER=PUBLIC_KEY
+IDENTITY_FILE=${IDENTITY_FILE:-~/.ssh/id_rsa.pub}
 
 
 function vm_state() {
@@ -36,27 +42,33 @@ function vm_state() {
     VBoxManage showvminfo $vmname --machinereadable | grep "^VMState=" | $SED -e 's/VMState="(.*)"/\1/'
 }
 
-VBoxManage createvm --name $VMNAME --register
-VBoxManage modifyvm $VMNAME --ostype RedHat_64 --memory 512 --vram 10
-VBoxManage modifyvm $VMNAME --acpi on --ioapic on
-VBoxManage modifyvm $VMNAME --cpus 1 --rtcuseutc on --cpuhotplug on --pae on
-VBoxManage modifyvm $VMNAME --hwvirtex on --hwvirtexexcl on
-VBoxManage modifyvm $VMNAME --nestedpaging on --largepages on
-VBoxManage modifyvm $VMNAME --vtxvpid on --accelerate3d off
-VBoxManage modifyvm $VMNAME --nic1 nat --natpf1 "guestssh,tcp,,2201,,22"
-VBoxManage modifyvm $VMNAME --boot1 dvd --boot2 disk
+resolve_environment_variables() {
+    perl -p -i -e 's/\$\{([^}]+)\}/defined $ENV{$1} ? $ENV{$1} : $&/eg' $1
+}
 
-VBoxManage storagectl $VMNAME --name FLOPPY --add floppy --controller I82078 --hostiocache on --bootable off
-VBoxManage storagectl $VMNAME --name IDE --add ide --controller PIIX4 --hostiocache on --bootable on
-VBoxManage storagectl $VMNAME --name SATA --add sata --controller IntelAhci --sataportcount 1 --hostiocache off --bootable on
+
+[ -d $WORK_DIR ] && rm -rf $WORK_DIR
+
+VBoxManage createvm --name ${VMNAME} --register
+VBoxManage modifyvm ${VMNAME} --ostype RedHat_64 --memory 512 --vram 10
+VBoxManage modifyvm ${VMNAME} --acpi on --ioapic on
+VBoxManage modifyvm ${VMNAME} --cpus 1 --rtcuseutc on --cpuhotplug on --pae on
+VBoxManage modifyvm ${VMNAME} --hwvirtex on --hwvirtexexcl on
+VBoxManage modifyvm ${VMNAME} --nestedpaging on --largepages on
+VBoxManage modifyvm ${VMNAME} --vtxvpid on --accelerate3d off
+VBoxManage modifyvm ${VMNAME} --nic1 nat --natpf1 "guestssh,tcp,,2201,,22"
+VBoxManage modifyvm ${VMNAME} --boot1 dvd --boot2 disk
+
+VBoxManage storagectl ${VMNAME} --name FLOPPY --add floppy --controller I82078 --hostiocache on --bootable off
+VBoxManage storagectl ${VMNAME} --name IDE --add ide --controller PIIX4 --hostiocache on --bootable on
+VBoxManage storagectl ${VMNAME} --name SATA --add sata --controller IntelAhci --sataportcount 1 --hostiocache off --bootable on
 
 
 VBoxManage createhd --filename $HD_PATH --size 8000 --format VMDK --variant Standard
-VBoxManage storageattach $VMNAME --storagectl SATA --port 0 --device 0 --type hdd --medium $HD_PATH --mtype normal --nonrotational on
-VBoxManage storageattach $VMNAME --storagectl IDE --port 0 --device 0 --type dvddrive --medium $OS_IMAGE
+VBoxManage storageattach ${VMNAME} --storagectl SATA --port 0 --device 0 --type hdd --medium $HD_PATH --mtype normal --nonrotational on
+VBoxManage storageattach ${VMNAME} --storagectl IDE --port 0 --device 0 --type dvddrive --medium $OS_IMAGE
 
 
-rm -f $FD_PATH
 dd bs=512 count=2280 if=/dev/zero of=$FD_PATH
 
 device=`hdiutil attach -nomount $FD_PATH | cut -d ' ' -f 1`
@@ -64,37 +76,77 @@ newfs_msdos $device
 hdiutil detach $device -force
 
 device=`hdiutil attach $FD_PATH -mountpoint $FD_MOUNT_POINT | cut -d ' ' -f 1`
-#path=`mount |grep -w "$device"  | cut -d ' ' -f 3`
-cp $KICKSTART_FILE $FD_MOUNT_POINT/ks.cfg
+
+export PUBLIC_KEY=`cat $IDENTITY_FILE | $SED -e 's:/:\\\\/:g'`
+export VB_VERSION=`VBoxManage --version | sed -E -e 's/(.*)r.*/\1/'`
+
+cp $KICKSTART_SRC_FILE $KICKSTART_FILE
+resolve_environment_variables $KICKSTART_FILE
+
+#for debugging
+cp $KICKSTART_SRC_FILE /tmp/ks.cfg
+resolve_environment_variables /tmp/ks.cfg
+
 hdiutil detach $device -force
 
-VBoxManage storageattach $VMNAME --storagectl FLOPPY --port 0 --device 0 --type fdd --medium $FD_PATH
+VBoxManage storageattach ${VMNAME} --storagectl FLOPPY --port 0 --device 0 --type fdd --medium $FD_PATH
 
-VBoxManage startvm $VMNAME
+VBoxManage startvm ${VMNAME}
 
 sleep 2
 
-VM_STATE=`vm_state $VMNAME`
+VM_STATE=`vm_state ${VMNAME}`
 while [ $VM_STATE == 'poweroff' ]; do
     sleep 5
-    VM_STATE=`vm_state $VMNAME`
+    VM_STATE=`vm_state ${VMNAME}`
 done
 
 sleep 5  #You will need to adjust this to not wait too long before sending the key strokes.
 
 #This send the string "\tks=floppy" to the VM using US keyboard scancodes
-VBoxManage controlvm $VMNAME keyboardputscancode 0f 39 25 1f 0d 21 26 18 19 99 19 15 1c
+VBoxManage controlvm ${VMNAME} keyboardputscancode 0f 39 25 1f 0d 21 26 18 19 99 19 15 1c
 
-echo "Waiting for VM to reboot"
-VM_STATE=`vm_state $VMNAME`
+echo "Waiting for VM to shutdown"
+VM_STATE=`vm_state ${VMNAME}`
 while [ $VM_STATE != 'poweroff' ]; do
     sleep 10
-    VM_STATE=`vm_state $VMNAME`
+    VM_STATE=`vm_state ${VMNAME}`
 done
 
 
-VBoxManage storagectl $VMNAME --name IDE --remove
-VBoxManage storagectl $VMNAME --name FLOPPY --remove
-rm -f $FD_PATH
+VBoxManage storagectl ${VMNAME} --name IDE --remove
+VBoxManage storagectl ${VMNAME} --name FLOPPY --remove
 
-VBoxManage startvm $VMNAME
+VBoxManage startvm ${VMNAME}
+
+VM_STATE=`vm_state ${VMNAME}`
+while [ $VM_STATE == 'poweroff' ]; do
+    sleep 5
+    VM_STATE=`vm_state ${VMNAME}`
+done
+
+echo "Waiting for VM to shutdown"
+VM_STATE=`vm_state ${VMNAME}`
+while [ $VM_STATE != 'poweroff' ]; do
+    sleep 10
+    VM_STATE=`vm_state ${VMNAME}`
+done
+
+OVF_DIR=${OVF_STORE}/${VMNAME}
+OVF_FILE=${OVF_DIR}/${VMNAME}.ovf
+
+echo "Exporting ${VMNAME} to ${OVF_FILE}"
+mkdir -p ${OVF_DIR}
+VBoxManage export ${VMNAME} --output ${OVF_FILE}
+
+echo "Deleting ${VMNAME}"
+VBoxManage unregistervm ${VMNAME} --delete
+
+echo "Importing ${OVF_FILE}"
+VBoxManage import ${OVF_FILE}
+
+
+
+
+
+
