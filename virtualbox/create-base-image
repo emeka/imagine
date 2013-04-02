@@ -18,14 +18,14 @@ if [[ "x${VMNAME}" == "x" || "x${OS_IMAGE}" == "x" || "x${KICKSTART_SRC_FILE}" =
 
 cat << EOF
 Usage:
-    `basename $0` vmname base_image kickstart_file
+    `basename $0` vmname iso_file kickstart_file
 EOF
 
 exit 1
 
 fi
 
-WORK_DIR=${WORK_DIR:-/tmp}
+WORK_DIR=${WORK_DIR:-/tmp/imagine}
 OVF_STORE=${OVF_STORE:-~/stores/ovf}
 VB_STORE=${VB_STORE:-~/stores/vbox}
 
@@ -35,6 +35,8 @@ FD_MOUNT_POINT=${FD_MOUNT_POINT-$WORK_DIR/mnt}
 KICKSTART_FILE=${KICKSTART_FILE:-$FD_MOUNT_POINT/ks.cfg}
 PUBLIC_KEY_PLACEHOLDER=PUBLIC_KEY
 IDENTITY_FILE=${IDENTITY_FILE:-~/.ssh/id_rsa.pub}
+USERNAME=${USERNAME:-vagrant}
+OVFNAME=${OVFNAME:-box}
 
 
 function vm_state() {
@@ -47,7 +49,8 @@ resolve_environment_variables() {
 }
 
 
-[ -d $WORK_DIR ] && rm -rf $WORK_DIR
+rm -rf $WORK_DIR
+mkdir -p $WORK_DIR
 
 VBoxManage createvm --name ${VMNAME} --register
 VBoxManage modifyvm ${VMNAME} --ostype RedHat_64 --memory 512 --vram 10
@@ -133,17 +136,18 @@ while [ $VM_STATE != 'poweroff' ]; do
 done
 
 OVF_DIR=${OVF_STORE}/${VMNAME}
-OVF_FILE=${OVF_DIR}/${VMNAME}.ovf
+OVF_FILE=${OVF_DIR}/${OVFNAME}.ovf
 
 echo "Exporting ${VMNAME} to ${OVF_FILE}"
 mkdir -p ${OVF_DIR}
 VBoxManage export ${VMNAME} --output ${OVF_FILE}
 
+${SED} -ie "s/${VMNAME}/${OVFNAME}/g" ${OVF_FILE}
+
 echo "Deleting ${VMNAME}"
 VBoxManage unregistervm ${VMNAME} --delete
 
-echo "Importing ${OVF_FILE}"
-VBoxManage import ${OVF_FILE}
+
 
 
 
