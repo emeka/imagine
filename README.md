@@ -8,8 +8,7 @@ This is a work in progress:
 * the script is geared toward OSX and you will need to adapt it for other operating systems,
 * some of the hardcoded code would need to adapted to your requirement.
 
-Please find the code on [github](https://github.com/emeka/imagine) and read
-the [README](https://github.com/emeka/imagine/blob/master/README.md) file.
+Please find the inital blog post here on [here].
 
 ## Command Line
 
